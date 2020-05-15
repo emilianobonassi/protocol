@@ -72,7 +72,7 @@ contract Shares is IShares, TokenUser, Spoke, SharesToken {
         onlySharesRequestor
         returns (uint256 sharesBought_)
     {
-        __getFeeManager().rewardAllFees();
+        // TODO: add milestone fee payout here
 
         // Calculate shares quantity
         sharesBought_ = mul(
@@ -95,22 +95,9 @@ contract Shares is IShares, TokenUser, Spoke, SharesToken {
         );
     }
 
-    // TODO: remove this after FeeManager arch changes
-    function createFor(address _who, uint256 _amount) external override {
-        require(
-            msg.sender == address(__getFeeManager()),
-            "Only FeeManager can call this function"
-        );
-
-        _mint(_who, _amount);
-    }
-
     /// @notice Redeem all of the sender's shares for a proportionate slice of the fund's assets
-    /// @dev Rewards all fees prior to redemption
     function redeemShares() external {
-        // Duplicates logic further down call stack, but need to assure all outstanding shares are
-        // assigned for fund manager (and potentially other fee recipients in the future)
-        __getFeeManager().rewardAllFees();
+        __payoutSellSharesFees(msg.sender, balanceOf(msg.sender));
         __redeemShares(balanceOf(msg.sender), false);
     }
 
@@ -118,7 +105,7 @@ contract Shares is IShares, TokenUser, Spoke, SharesToken {
     /// @dev _bypassFailure is set to true, the user will lose their claim to any assets for
     /// which the transfer function fails.
     function redeemSharesEmergency() external {
-        __getFeeManager().rewardAllFees();
+        __payoutSellSharesFees(msg.sender, balanceOf(msg.sender));
         __redeemShares(balanceOf(msg.sender), true);
     }
 
@@ -126,6 +113,7 @@ contract Shares is IShares, TokenUser, Spoke, SharesToken {
     /// for a proportionate slice of the fund's assets
     /// @param _sharesQuantity Number of shares
     function redeemSharesQuantity(uint256 _sharesQuantity) external {
+         __payoutSellSharesFees(msg.sender, _sharesQuantity);
         __redeemShares(_sharesQuantity, false);
     }
 
@@ -172,6 +160,60 @@ contract Shares is IShares, TokenUser, Spoke, SharesToken {
 
     // PRIVATE FUNCTIONS
 
+    /// @notice Pays due milestone-based fees to the fund manager.
+    /// @dev Mints new shares. Callable by anyone.
+    function payoutMilestoneFeesForFund() public {
+        uint256 sharesDue = __getFeeManager().settleFeesForFund(IFeeManager.FeeHook.Milestone);
+        if (sharesDue > 0) {
+            _mint(__getHub().MANAGER(), sharesDue);
+        }
+    }
+
+    // PRIVATE FUNCTIONS
+
+    /// @dev This charges both Milestone fees and SellShares fee types:
+    /// 1. Payout all Milestone fees that have matured (inflates shares by minting to manager)
+    /// 2. Payout investor's share of non-matured Milestone fees (reallocates shares from investor to manager)
+    /// 3. Payout SellShare fees for investor (reallocates shares from investor to manager)
+    /// Uses try/catch, because if fees cause an error, still need to guarantee redeemability.
+    function __payoutSellSharesFees(address _redeemer, uint256 _sharesQuantity) private {
+        try this.payoutMilestoneFeesForFund() {}
+        catch {}
+
+        address manager = __getHub().MANAGER();
+        if (_redeemer != manager) {
+            uint256 totalSharesDue;
+            // Milestone fees
+            try __getFeeManager().settleFeesForInvestor(
+                IFeeManager.FeeHook.Milestone,
+                _redeemer,
+                _sharesQuantity
+            )
+                returns (uint256 sharesDue)
+            {
+                totalSharesDue = sharesDue;
+            }
+            catch {}
+
+            // SellShares fees
+            try __getFeeManager().settleFeesForInvestor(
+                IFeeManager.FeeHook.SellShares,
+                _redeemer,
+                _sharesQuantity
+            )
+                returns (uint256 sharesDue)
+            {
+                totalSharesDue = add(totalSharesDue, sharesDue);
+            }
+            catch {}
+
+            if (totalSharesDue > 0 && balanceOf(_redeemer) >= totalSharesDue) {
+                _burn(_redeemer, totalSharesDue);
+                _mint(manager, totalSharesDue);
+            }
+        }
+    }
+
     /// @notice Redeem a specified quantity of the sender's shares
     /// for a proportionate slice of the fund's assets
     /// @dev If _bypassFailure is set to true, the user will lose their claim to any assets for
@@ -188,8 +230,6 @@ contract Shares is IShares, TokenUser, Spoke, SharesToken {
         IVault vault = __getVault();
         address[] memory payoutAssets = vault.getOwnedAssets();
         require(payoutAssets.length > 0, "__redeemShares: payoutAssets is empty");
-
-        __getFeeManager().rewardAllFees();
 
         // Destroy the shares
         uint256 sharesSupply = totalSupply();

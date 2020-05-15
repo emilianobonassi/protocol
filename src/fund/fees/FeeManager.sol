@@ -3,6 +3,7 @@ pragma solidity 0.6.8;
 pragma experimental ABIEncoderV2;
 
 import "../../dependencies/DSMath.sol";
+import "../../dependencies/libs/EnumerableSet.sol";
 import "../hub/Spoke.sol";
 import "./IFee.sol";
 import "./IFeeManager.sol";
@@ -11,124 +12,144 @@ import "./IFeeManager.sol";
 /// @author Melon Council DAO <security@meloncoucil.io>
 /// @notice Manages and allocates fees for a particular fund
 contract FeeManager is IFeeManager, DSMath, Spoke {
+    using EnumerableSet for EnumerableSet.AddressSet;
 
-    event FeeReward(uint shareQuantity);
-    event FeeRegistration(address fee);
+    event FeeEnabled(address indexed fee, bytes encodedSettings);
 
-    struct FeeInfo {
-        address feeAddress;
-        uint feeRate;
-        uint feePeriod;
-    }
+    event FeeSettledForFund(address indexed fee, uint256 sharesDue);
 
-    IFee[] public fees;
-    mapping (address => bool) public feeIsRegistered;
+    event FeeSettledForInvestor(
+        address indexed fee,
+        address indexed investor,
+        uint256 sharesQuantity,
+        uint256 sharesDue
+    );
 
-    constructor(
-        address _hub,
-        address _denominationAsset,
-        address[] memory _fees,
-        uint[] memory _rates,
-        uint[] memory _periods
-    )
-        Spoke(_hub)
-        public
+    EnumerableSet.AddressSet private enabledFees;
+
+    constructor(address _hub) Spoke(_hub) public {}
+
+    // EXTERNAL FUNCTIONS
+
+    /// @notice Enable fees for use in the fund
+    /// @param _fees The fees to enable
+    /// @param _encodedSettings The encoded settings with which a fund uses fees
+    function enableFees(address[] calldata _fees, bytes[] calldata _encodedSettings)
+        external
+        override
     {
-        for (uint i = 0; i < _fees.length; i++) {
+        // Access
+        require(
+            msg.sender == __getHub().FUND_FACTORY(),
+            "Only FundFactory can make this call"
+        );
+        // Sanity check
+        require(_fees.length > 0, "enableFees: _fees cannot be empty");
+        require(
+            _fees.length == _encodedSettings.length,
+            "enableFees: array lengths unequal"
+        );
+
+        IRegistry registry = __getRegistry();
+        for (uint256 i = 0; i < _fees.length; i++) {
+            IFee fee = IFee(_fees[i]);
             require(
-                IRegistry(IHub(_hub).REGISTRY()).feeIsRegistered(_fees[i]),
-                "Fee must be known to Registry"
+                registry.feeIsRegistered(address(fee)),
+                "enableFees: Fee is not on Registry"
             );
-            register(_fees[i], _rates[i], _periods[i], _denominationAsset);
-        }
-        if (fees.length > 0) {
             require(
-                fees[0].identifier() == 0,
-                "Management fee must be at 0 index"
+                !__feeIsEnabled(address(fee)),
+                "enableFees: Fee is already enabled"
             );
-        }
-        if (fees.length > 1) {
-            require(
-                fees[1].identifier() == 1,
-                "Performance fee must be at 1 index"
-            );
+
+            // Set fund config on fee
+            fee.addFundSettings(_encodedSettings[i]);
+
+            // Add fee
+            EnumerableSet.add(enabledFees, address(fee));
+
+            emit FeeEnabled(address(fee), _encodedSettings[i]);
         }
     }
 
-    function register(
-        address feeAddress,
-        uint feeRate,
-        uint feePeriod,
-        address denominationAsset
-    )
-        internal
+    /// @notice Settle fees for the entire fund
+    /// @param _hook The FeeHook for which to settle fees
+    /// @return totalSharesDue_ The total amount of shares that should be created for the manager
+    /// @dev Gets fees owed by entire fund, while giving the Fee an opportunity to update its state.
+    /// Works by minting new fund shares to fund manager.
+    function settleFeesForFund(FeeHook _hook)
+        external
+        override
+        onlyShares
+        returns (uint256 totalSharesDue_)
     {
-        require(!feeIsRegistered[feeAddress], "Fee already registered");
-        feeIsRegistered[feeAddress] = true;
-        fees.push(IFee(feeAddress));
-        IFee(feeAddress).initializeForUser(feeRate, feePeriod, denominationAsset);  // initialize state
-        emit FeeRegistration(feeAddress);
-    }
-
-    function totalFeeAmount() external override returns (uint total) {
+        address[] memory fees = getEnabledFees();
         for (uint i = 0; i < fees.length; i++) {
-            total = add(total, fees[i].feeAmount());
-        }
-        return total;
-    }
+            IFee fee = IFee(fees[i]);
+            if (fee.feeHook() == _hook) {
+                uint256 sharesDue = fee.settleFeeForFund();
+                if (sharesDue == 0) continue;
 
-    /// @dev Shares to be inflated after update state
-    function _rewardFee(IFee fee) internal {
-        require(feeIsRegistered[address(fee)], "Fee is not registered");
-        uint rewardShares = fee.feeAmount();
-        if (rewardShares > 0) {
-            try fee.updateState() {
-                __getShares().createFor(IHub(HUB).MANAGER(), rewardShares);
-                emit FeeReward(rewardShares);
+                totalSharesDue_ = add(totalSharesDue_, sharesDue);
+                emit FeeSettledForFund(address(fee), sharesDue);
             }
-            catch {}
         }
     }
 
-    /// @notice Reward all fees
-    /// @dev Can be called by anyone
-    function rewardAllFees() external override {
+    /// @notice Settle fees for a single investor
+    /// @param _hook The FeeHook for which to settle fees
+    /// @param _investor The investor for whom to settle fees
+    /// @param _sharesQuantity The quantity of shares for which to settle fees
+    /// @return totalSharesDue_ The total amount of shares that should be reallocated to the manager
+    /// @dev Gets fees owed by an investor, while giving the Fee an opportunity to update its state.
+    /// Works by reallocation from investor to fund manager.
+    function settleFeesForInvestor(FeeHook _hook, address _investor, uint256 _sharesQuantity)
+        external
+        override
+        onlyShares
+        returns (uint256 totalSharesDue_)
+    {
+        address[] memory fees = getEnabledFees();
         for (uint i = 0; i < fees.length; i++) {
-            _rewardFee(fees[i]);
+            IFee fee = IFee(fees[i]);
+            if (fee.feeHook() == _hook) {
+                uint256 sharesDue = fee.settleFeeForInvestor(_investor, _sharesQuantity);
+                if (sharesDue == 0) continue;
+
+                totalSharesDue_ = add(totalSharesDue_, sharesDue);
+                emit FeeSettledForInvestor(address(fee), _investor, _sharesQuantity, sharesDue);
+            }
         }
     }
 
-    /// @dev Convenience function; anyone can reward management fee any time
-    /// @dev Convention that management fee is 0
-    function rewardManagementFee() public override {
-        if (fees.length >= 1) _rewardFee(fees[0]);
+    /// @notice Update settings for a fee that is in use in a fund
+    /// @param _fee The fee to update
+    /// @param _encodedSettings The encoded settings with which a fund uses fees
+    function updateFeeSettings(address _fee, bytes calldata _encodedSettings)
+        external
+        onlyManager
+    {
+        IFee(_fee).updateFundSettings(_encodedSettings);
     }
 
-    /// @dev Convenience function
-    /// @dev Convention that management fee is 0
-    function managementFeeAmount() external override returns (uint) {
-        if (fees.length < 1) return 0;
-        return fees[0].feeAmount();
+    // PUBLIC FUNCTIONS
+
+    /// @notice Get a list of enabled fees
+    /// @return An array of enabled fee addresses
+    function getEnabledFees() public view returns (address[] memory) {
+        return EnumerableSet.enumerate(enabledFees);
     }
 
-    /// @dev Convenience function
-    /// @dev Convention that performace fee is 1
-    function performanceFeeAmount() external override returns (uint) {
-        if (fees.length < 2) return 0;
-        return fees[1].feeAmount();
+    // PRIVATE FUNCTIONS
+
+    /// @dev Helper to check if a fee is enabled for the fund
+    function __feeIsEnabled(address _fee) private view returns (bool) {
+        return EnumerableSet.contains(enabledFees, _fee);
     }
 }
 
 contract FeeManagerFactory {
-    function createInstance(
-        address _hub,
-        address _denominationAsset,
-        address[] calldata _fees,
-        uint256[] calldata _feeRates,
-        uint256[] calldata _feePeriods
-    ) external returns (address) {
-        return address(
-            new FeeManager(_hub, _denominationAsset, _fees, _feeRates, _feePeriods)
-        );
+    function createInstance(address _hub) external returns (address) {
+        return address(new FeeManager(_hub));
     }
 }

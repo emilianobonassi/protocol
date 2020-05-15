@@ -1,24 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.6.8;
+pragma experimental ABIEncoderV2;
 
 /// @title FeeManager Interface
 /// @author Melon Council DAO <security@meloncoucil.io>
 interface IFeeManager {
-    function managementFeeAmount() external returns (uint256);
-    function performanceFeeAmount() external returns (uint256);
-    function rewardAllFees() external;
-    function rewardManagementFee() external;
-    function totalFeeAmount() external returns (uint256);
+    enum FeeHook { None, BuyShares, Milestone, SellShares }
+
+    function enableFees(address[] calldata, bytes[] calldata) external;
+    function settleFeesForFund(FeeHook) external returns (uint256);
+    function settleFeesForInvestor(FeeHook, address, uint256) external returns (uint256);
 }
 
 /// @title FeeManagerFactory Interface
 /// @author Melon Council DAO <security@meloncoucil.io>
 interface IFeeManagerFactory {
-    function createInstance(
-        address,
-        address,
-        address[] calldata,
-        uint[] calldata,
-        uint[] calldata
-    ) external returns (address);
+    function createInstance(address) external returns (address);
 }
