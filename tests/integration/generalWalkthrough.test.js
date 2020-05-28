@@ -67,8 +67,16 @@ beforeAll(async () => {
       managementFee.options.address,
       performanceFee.options.address
     ],
-    rates: [toWei('0.02', 'ether'), toWei('0.2', 'ether')],
-    periods: [0, 7776000], // 0 and 90 days
+    encodedSettings: [
+      encodeArgs(
+        ['uint256'],
+        [toWei('0.02', 'ether')]
+      ),
+      encodeArgs(
+        ['uint256', 'uint256'],
+        [toWei('0.2', 'ether'), 7776000] // 90 days
+      )
+    ]
   };
 
   const policies = {
@@ -80,17 +88,16 @@ beforeAll(async () => {
   await send(fundFactory, 'beginFundSetup', [
     fundName,
     fees.contracts,
-    fees.rates,
-    fees.periods,
+    fees.encodedSettings,
     policies.contracts,
     policies.encodedSettings,
     [oasisDexAdapter.options.address],
     weth.options.address
   ], managerTxOpts);
-  await send(fundFactory, 'createFeeManager', [], managerTxOpts);
-  await send(fundFactory, 'createPolicyManager', [], managerTxOpts);
   await send(fundFactory, 'createShares', [], managerTxOpts);
   await send(fundFactory, 'createVault', [], managerTxOpts);
+  await send(fundFactory, 'createFeeManager', [], managerTxOpts);
+  await send(fundFactory, 'createPolicyManager', [], managerTxOpts);
   const res = await send(fundFactory, 'completeFundSetup', [], managerTxOpts);
   const hubAddress = getEventFromLogs(
     res.logs,

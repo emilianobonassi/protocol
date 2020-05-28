@@ -12,6 +12,7 @@ import { call, send } from '~/deploy/utils/deploy-contract';
 import { partialRedeploy } from '~/deploy/scripts/deploy-system';
 import { BNExpDiv, BNExpMul } from '~/tests/utils/BNmath';
 import { CONTRACT_NAMES } from '~/tests/utils/constants';
+import { encodeArgs } from '~/tests/utils/formatting';
 import { investInFund, setupFundWithParams } from '~/tests/utils/fund';
 import getAccounts from '~/deploy/utils/getAccounts';
 import { getEventFromLogs, getFunctionSignature } from '~/tests/utils/metadata';
@@ -43,15 +44,17 @@ beforeAll(async () => {
   performanceFee = contracts.PerformanceFee;
   priceSource = contracts.TestingPriceFeed;
 
-  const managementFee = contracts.ManagementFee;
   const fundFactory = contracts.FundFactory;
 
-  const feeAddresses = [
-    managementFee.options.address,
-    performanceFee.options.address
-  ];
+  // Fees
   performanceFeePeriod = '2'; // 2 secs
   performanceFeeRate = toWei('.2', 'ether');
+  const fees = {
+    addresses: [performanceFee.options.address],
+    encodedSettings: [
+      encodeArgs(['uint256', 'uint256'], [performanceFeeRate, performanceFeePeriod])
+    ]
+  };
 
   wethToEthRate = toWei('1', 'ether');
   mlnToEthRate = toWei('0.5', 'ether');
@@ -68,9 +71,8 @@ beforeAll(async () => {
   fund = await setupFundWithParams({
     integrationAdapters: [oasisDexAdapter.options.address],
     fees: {
-      addresses: feeAddresses,
-      rates: [0, performanceFeeRate],
-      periods: [0, performanceFeePeriod],
+      addresses: fees.addresses,
+      encodedSettings: fees.encodedSettings
     },
     initialInvestment: {
       contribAmount: toWei('1', 'ether'),
@@ -222,8 +224,13 @@ test(`performance fee is calculated correctly`, async () => {
   await delay(2000);
 
   const lastHWM = new BN(
-    await call(performanceFee, 'highWaterMark', [feeManager.options.address])
+    (await call(
+      performanceFee,
+      'feeManagerToFeeInfo',
+      [feeManager.options.address]
+    )).highWaterMark
   );
+
   const currentTotalSupply = new BN(await call(shares, 'totalSupply'));
   const fundGav = new BN(await call(shares, 'calcGav'));
   const gavPerShare = BNExpDiv(
@@ -240,7 +247,13 @@ test(`performance fee is calculated correctly`, async () => {
     currentTotalSupply,
   );
 
-  const performanceFeeOwed = new BN(await call(feeManager, 'performanceFeeAmount'));
+  const performanceFeeOwed = new BN(
+    (await call(
+      performanceFee,
+      'calcSharesDueForFund',
+      [feeManager.options.address]
+    ))[0]
+  );
   expect(performanceFeeOwed).bigNumberGt(new BN(0));
 
   const newGavPerShare = BNExpDiv(
@@ -268,13 +281,25 @@ test(`investor redeems half his shares, performance fee deducted`, async () => {
   const preFundGav = new BN(await call(shares, 'calcGav'));
   const preFundGavPerShare = BNExpDiv(preFundGav, preTotalSupply);
 
-  const performanceFeeOwed = new BN(await call(feeManager, 'performanceFeeAmount'));
+  const performanceFeeOwed = new BN(
+    (await call(
+      performanceFee,
+      'calcSharesDueForFund',
+      [feeManager.options.address]
+    ))[0]
+  );
   expect(performanceFeeOwed).bigNumberGt(new BN(0));
 
   const redeemQuantity = preInvestorShares.div(new BN(2));
   await send(shares, 'redeemSharesQuantity', [redeemQuantity.toString()], investorTxOpts);
 
-  const postHWM = new BN(await call(performanceFee, 'highWaterMark', [feeManager.options.address]));
+  const postHWM = new BN(
+    (await call(
+      performanceFee,
+      'feeManagerToFeeInfo',
+      [feeManager.options.address]
+    )).highWaterMark
+  );
   const postInvestorShares = new BN(await call(shares, 'balanceOf', [investor]));
   const postManagerShares = new BN(await call(shares, 'balanceOf', [manager]));
   const postTotalSupply = new BN(await call(shares, 'totalSupply'));
@@ -311,7 +336,7 @@ test(`manager redeems his shares and receives expected proportion of assets`, as
   );
 });
 
-test(`manager calls rewardAllFees to update high watermark`, async () => {
+test(`manager calls payoutMilestoneFeesForFund to update high watermark`, async () => {
   const { feeManager, shares, vault } = fund;
 
   // Wait for performance period
@@ -343,10 +368,15 @@ test(`manager calls rewardAllFees to update high watermark`, async () => {
   const preFundGav = new BN(await call(shares, 'calcGav'));
   const preTotalSupply = new BN(await call(shares, 'totalSupply'));
 
-  const performanceFeeOwed = new BN(await call(feeManager, 'performanceFeeAmount'));
-  expect(performanceFeeOwed).bigNumberGt(new BN(0));
+  const performanceFeeOwed = new BN(
+    (await call(
+      performanceFee,
+      'calcSharesDueForFund',
+      [feeManager.options.address]
+    ))[0]
+  );  expect(performanceFeeOwed).bigNumberGt(new BN(0));
 
-  await send(feeManager, 'rewardAllFees', [], managerTxOpts);
+  await send(shares, 'payoutMilestoneFeesForFund', [], managerTxOpts);
 
   const postManagerShares = new BN(await call(shares, 'balanceOf', [manager]));
   const postFundGav = new BN(await call(shares, 'calcGav'));
@@ -359,7 +389,11 @@ test(`manager calls rewardAllFees to update high watermark`, async () => {
   expect(postManagerShares.sub(preManagerShares)).bigNumberEq(performanceFeeOwed);
 
   const currentHWM = new BN(
-    await call(performanceFee, 'highWaterMark', [feeManager.options.address])
+    (await call(
+      performanceFee,
+      'feeManagerToFeeInfo',
+      [feeManager.options.address]
+    )).highWaterMark
   );
   expect(currentHWM).bigNumberEq(preFundGavPerShare);
   expect(postFundGavPerShare).bigNumberCloseTo(

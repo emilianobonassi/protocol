@@ -30,7 +30,6 @@ beforeAll(async () => {
       [],
       [],
       [],
-      [],
       weth.options.address
     ],
     managerTxOpts
@@ -41,10 +40,10 @@ test('continue setup of a fund', async () => {
   const amguTxValue = toWei('0.01', 'ether')
   const userTxOptsWithAmgu = { ...userTxOpts, value: amguTxValue };
   
-  await send(fundFactory, 'createFeeManagerFor', [manager], userTxOptsWithAmgu);
-  await send(fundFactory, 'createPolicyManagerFor', [manager], userTxOptsWithAmgu);
   await send(fundFactory, 'createSharesFor', [manager], userTxOptsWithAmgu);
   await send(fundFactory, 'createVaultFor', [manager], userTxOptsWithAmgu);
+  await send(fundFactory, 'createFeeManagerFor', [manager], userTxOptsWithAmgu);
+  await send(fundFactory, 'createPolicyManagerFor', [manager], userTxOptsWithAmgu);
   const res = await send(fundFactory, 'completeFundSetupFor', [manager], userTxOptsWithAmgu);
   expect(res).toBeTruthy();
 });

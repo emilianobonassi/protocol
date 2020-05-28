@@ -127,7 +127,6 @@ test('Set amgu and check its usage in single amguPayable function', async () => 
       [],
       [],
       [],
-      [],
       quoteToken.options.address,
     ],
     managerTxOpts
@@ -165,16 +164,15 @@ test('set amgu with incentive attached and check its usage in creating a fund', 
       [],
       [],
       [],
-      [],
       quoteToken.options.address
     ],
     managerTxOpts
   );
 
-  await assertAmguTx(fundFactory, 'createFeeManager');
-  await assertAmguTx(fundFactory, 'createPolicyManager');
   await assertAmguTx(fundFactory, 'createShares');
   await assertAmguTx(fundFactory, 'createVault');
+  await assertAmguTx(fundFactory, 'createFeeManager');
+  await assertAmguTx(fundFactory, 'createPolicyManager');
   const res = await assertAmguTx(fundFactory, 'completeFundSetup');
 
   const hubAddress = getEventFromLogs(
