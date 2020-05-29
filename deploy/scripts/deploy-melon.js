@@ -9,8 +9,6 @@ const main = async input => {
   const melonAddrs = input.melon.addr;
   const tokenAddrs = input.tokens.addr;
 
-  const managementFee = await nab('ManagementFee', [], melonAddrs);
-  const performanceFee = await nab('PerformanceFee', [], melonAddrs);
   const feeManagerFactory = await nab('FeeManagerFactory', [], melonAddrs);
   const policyManagerFactory = await nab('PolicyManagerFactory', [], melonAddrs);
   const sharesFactory = await nab('SharesFactory', [], melonAddrs);
@@ -28,6 +26,10 @@ const main = async input => {
   const zeroExV2Adapter = await nab('ZeroExV2Adapter', [input.zeroExV2.addr.ZeroExV2Exchange], melonAddrs);
   const zeroExV3Adapter = await nab('ZeroExV3Adapter', [input.zeroExV3.addr.ZeroExV3Exchange], melonAddrs);
   const engineAdapter = await nab('EngineAdapter', [engine.options.address], melonAddrs);
+
+  // Fees
+  const managementFee = await nab('ManagementFee', [registry.options.address], melonAddrs);
+  const performanceFee = await nab('PerformanceFee', [registry.options.address], melonAddrs);
 
   // Policies
   const assetBlacklist = await nab('AssetBlacklist', [registry.options.address], melonAddrs);
